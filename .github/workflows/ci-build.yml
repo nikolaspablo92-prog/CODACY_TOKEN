@@ -1,0 +1,122 @@
+name: CI Build
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  BUILD_TYPE: Release
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        include:
+          - os: windows-latest
+            ninja_package: ""
+          - os: ubuntu-latest
+            ninja_package: "ninja-build"
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.ninja_package }} clang-tidy
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: ${{ runner.os }}-cmake-build-${{ hashFiles('**/CMakeLists.txt') }}
+
+      - name: Configure CMake (Ninja)
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Run clang-tidy (if available)
+        if: runner.os == 'Linux'
+        run: |
+          cmake --build build --target run-clang-tidy || true
+
+      - name: Build (CMake)
+        run: |
+          cmake --build build --config ${{ env.BUILD_TYPE }} --parallel ${{ env.CMAKE_BUILD_PARALLEL_LEVEL }}
+
+      - name: Build .NET projects (Release)
+        run: |
+          dotnet build src/AI.Agent.Core/AI.Agent.Core.csproj -c Release --no-restore
+
+      - name: Run unit tests (dotnet)
+        run: |
+          dotnet test tests/UnitTests/AI.Agent.Core.Tests.csproj --no-build --verbosity normal
+
+      - name: Run integration tests (dotnet)
+        run: |
+          dotnet test tests/IntegrationTests/AI.Agent.Core.Integration.csproj --no-build --verbosity normal
+
+      - name: Run unit tests with coverage
+        run: |
+          dotnet test tests/UnitTests/AI.Agent.Core.Tests.csproj --no-build --configuration Release --collect:"XPlat Code Coverage" --results-directory ./TestResults/Unit
+        shell: bash
+
+      - name: Run integration tests with coverage
+        run: |
+          dotnet test tests/IntegrationTests/AI.Agent.Core.Integration.csproj --no-build --configuration Release --collect:"XPlat Code Coverage" --results-directory ./TestResults/Integration
+        shell: bash
+
+      - name: Install reportgenerator global tool
+        run: |
+          dotnet tool install --global dotnet-reportgenerator-globaltool --version 5.1.16
+
+      - name: Add dotnet tools to PATH (Linux)
+        if: runner.os == 'Linux'
+        run: echo "${HOME}/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: Add dotnet tools to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\.dotnet\tools"
+
+      - name: Generate coverage report
+        run: |
+          reportgenerator -reports:./TestResults/**/coverage.cobertura.xml -targetdir:coverage-report -reporttypes:Html
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report-${{ matrix.os }}
+          path: coverage-report
+
+      - name: Upload test reports and artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-${{ matrix.os }}
+          path: |
+            build/bin
+            build/Testing || build
+
+      # Codacy analysis step - requires CODACY_TOKEN secret to be set in the repository
+      - name: Run Codacy analysis (Docker)
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          CODACY_API_TOKEN: ${{ secrets.CODACY_TOKEN }}
+        run: |
+          echo "Starting Codacy analysis via Docker. Ensure secret CODACY_TOKEN is set."
+          docker run --rm -v "${{ github.workspace }}:/src" -e CODACY_API_TOKEN="${CODACY_API_TOKEN}" codacy/codacy-analysis-cli analyze --directory /src || true
+        shell: bash
