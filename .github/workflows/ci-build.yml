@@ -63,14 +63,6 @@ jobs:
         run: |
           dotnet build src/AI.Agent.Core/AI.Agent.Core.csproj -c Release --no-restore
 
-      - name: Run unit tests (dotnet)
-        run: |
-          dotnet test tests/UnitTests/AI.Agent.Core.Tests.csproj --no-build --verbosity normal
-
-      - name: Run integration tests (dotnet)
-        run: |
-          dotnet test tests/IntegrationTests/AI.Agent.Core.Integration.csproj --no-build --verbosity normal
-
       - name: Run unit tests with coverage
         run: |
           dotnet test tests/UnitTests/AI.Agent.Core.Tests.csproj --no-build --configuration Release --collect:"XPlat Code Coverage" --results-directory ./TestResults/Unit
